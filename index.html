@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notion ↔ Google Docs Sync</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f7f6f3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 480px;
+      width: 100%;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1a1a1a;
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #787774;
+      margin-bottom: 24px;
+    }
+    .field {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #37352f;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #e0dedd;
+      border-radius: 6px;
+      font-size: 14px;
+      color: #37352f;
+      background: #f7f6f3;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #2eaadc; background: white; }
+    .btn {
+      width: 100%;
+      padding: 12px;
+      background: #2eaadc;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn:hover { background: #2495c2; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { background: #b0d8ed; cursor: not-allowed; }
+    .log {
+      margin-top: 20px;
+      background: #f7f6f3;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      color: #37352f;
+      min-height: 48px;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #e0dedd;
+    }
+    .log-line { margin-bottom: 4px; }
+    .log-line.ok { color: #0f7b0f; }
+    .log-line.err { color: #d44c47; }
+    .log-line.info { color: #2eaadc; }
+    .divider {
+      border: none;
+      border-top: 1px solid #e0dedd;
+      margin: 20px 0;
+    }
+    .note {
+      font-size: 12px;
+      color: #9b9a97;
+      line-height: 1.5;
+    }
+    .note a { color: #2eaadc; text-decoration: none; }
+    .note a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Notion ↔ Google Docs Sync</h1>
+    <p class="subtitle">Sync a Notion page's content into a Google Doc on demand.</p>
+
+    <div class="field">
+      <label>Notion Integration Token</label>
+      <input type="password" id="notionToken" placeholder="secret_xxxxxxxxxxxx" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label>Notion Page ID</label>
+      <input type="text" id="notionPageId" placeholder="32-char page ID or full URL" />
+    </div>
+    <div class="field">
+      <label>Google Docs ID</label>
+      <input type="text" id="googleDocId" placeholder="Google Doc ID from URL" />
+    </div>
+    <div class="field">
+      <label>Google OAuth Token</label>
+      <input type="password" id="googleToken" placeholder="ya29.xxxxxxxxxxxx" autocomplete="off" />
+    </div>
+
+    <button class="btn" id="syncBtn" onclick="runSync()">⟳ Sync Notion → Google Docs</button>
+
+    <div class="log" id="log"><span style="color:#9b9a97">Logs will appear here…</span></div>
+
+    <hr class="divider" />
+    <p class="note">
+      <strong>How to get tokens:</strong><br/>
+      • <a href="https://www.notion.so/my-integrations" target="_blank">Notion token</a>: Create an integration and share the page with it.<br/>
+      • <a href="https://developers.google.com/oauthplayground" target="_blank">Google token</a>: Use OAuth Playground with the Docs API scope.<br/>
+      • Tokens are never stored or sent anywhere except the respective APIs.
+    </p>
+  </div>
+
+  <script>
+    function log(msg, type = 'info') {
+      const logEl = document.getElementById('log');
+      if (logEl.querySelector('span')) logEl.innerHTML = '';
+      const line = document.createElement('div');
+      line.className = 'log-line ' + type;
+      line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function parseNotionId(input) {
+      const clean = input.trim().replace(/-/g, '');
+      const match = clean.match(/([a-f0-9]{32})/i);
+      return match ? match[1] : null;
+    }
+
+    async function fetchNotionBlocks(pageId, token) {
+      const res = await fetch(
+        'https://api.notion.com/v1/blocks/' + pageId + '/children?page_size=100',
+        {
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Notion-Version': '2022-06-28'
+          }
+        }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error('Notion API error ' + res.status + ': ' + (err.message || res.statusText));
+      }
+      return res.json();
+    }
+
+    function blocksToText(data) {
+      const lines = [];
+      for (const block of data.results || []) {
+        const type = block.type;
+        const richText = block[type]?.rich_text || [];
+        const text = richText.map(rt => rt.plain_text).join('');
+        if (type === 'heading_1') lines.push('# ' + text);
+        else if (type === 'heading_2') lines.push('## ' + text);
+        else if (type === 'heading_3') lines.push('### ' + text);
+        else if (type === 'bulleted_list_item') lines.push('• ' + text);
+        else if (type === 'numbered_list_item') lines.push('  ' + text);
+        else if (type === 'to_do') lines.push((block.to_do?.checked ? '[x] ' : '[ ] ') + text);
+        else if (type === 'code') lines.push('```\n' + text + '\n```');
+        else if (type === 'divider') lines.push('---');
+        else if (text) lines.push(text);
+      }
+      return lines.join('\n');
+    }
+
+    async function writeToGoogleDoc(docId, token, content) {
+      // First get the doc to find current end index
+      const getRes = await fetch(
+        'https://docs.googleapis.com/v1/documents/' + docId,
+        { headers: { 'Authorization': 'Bearer ' + token } }
+      );
+      if (!getRes.ok) {
+        const err = await getRes.json().catch(() => ({}));
+        throw new Error('Google Docs GET error ' + getRes.status + ': ' + (err.error?.message || getRes.statusText));
+      }
+      const doc = await getRes.json();
+      const endIndex = doc.body?.content?.slice(-1)[0]?.endIndex || 1;
+
+      // Batch update: delete existing content (except the final newline) then insert new content
+      const requests = [];
+      if (endIndex > 2) {
+        requests.push({
+          deleteContentRange: {
+            range: { startIndex: 1, endIndex: endIndex - 1 }
+          }
+        });
+      }
+      requests.push({
+        insertText: {
+          location: { index: 1 },
+          text: content
+        }
+      });
+
+      const patchRes = await fetch(
+        'https://docs.googleapis.com/v1/documents/' + docId + ':batchUpdate',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ requests })
+        }
+      );
+      if (!patchRes.ok) {
+        const err = await patchRes.json().catch(() => ({}));
+        throw new Error('Google Docs PATCH error ' + patchRes.status + ': ' + (err.error?.message || patchRes.statusText));
+      }
+      return patchRes.json();
+    }
+
+    async function runSync() {
+      const btn = document.getElementById('syncBtn');
+      const notionToken = document.getElementById('notionToken').value.trim();
+      const notionPageIdRaw = document.getElementById('notionPageId').value.trim();
+      const googleDocId = document.getElementById('googleDocId').value.trim();
+      const googleToken = document.getElementById('googleToken').value.trim();
+
+      if (!notionToken || !notionPageIdRaw || !googleDocId || !googleToken) {
+        log('Please fill in all fields before syncing.', 'err');
+        return;
+      }
+
+      const notionPageId = parseNotionId(notionPageIdRaw);
+      if (!notionPageId) {
+        log('Could not parse Notion Page ID. Paste the full page URL or 32-char ID.', 'err');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '⟳ Syncing…';
+
+      try {
+        log('Fetching blocks from Notion page…');
+        const notionData = await fetchNotionBlocks(notionPageId, notionToken);
+        const blockCount = (notionData.results || []).length;
+        log('Fetched ' + blockCount + ' blocks from Notion.', 'ok');
+
+        const textContent = blocksToText(notionData);
+        log('Converting blocks to plain text…');
+
+        log('Writing to Google Doc…');
+        await writeToGoogleDoc(googleDocId, googleToken, textContent);
+        log('Done! Google Doc updated successfully.', 'ok');
+      } catch (err) {
+        log('Error: ' + err.message, 'err');
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '⟳ Sync Notion → Google Docs';
+      }
+    }
+  </script>
+</body>
+</html>
